@@ -640,7 +640,7 @@ void msm_isp_notify(struct vfe_device *vfe_dev, uint32_t event_type,
   event_data.timestamp = ts->event_time;
   event_data.mono_timestamp = ts->buf_time;
   if (event_type == ISP_EVENT_SOF) {
-    pr_err_ratelimited("cityman_vfe send SOF src=%u fid=%u type=0x%x\n",
+    pr_debug("cityman_vfe send SOF src=%u fid=%u type=0x%x\n",
            frame_src, event_data.frame_id, event_type | frame_src);
   }
   msm_isp_send_event(vfe_dev, event_type | frame_src, &event_data);
@@ -823,7 +823,7 @@ int msm_isp_request_axi_stream(struct vfe_device *vfe_dev, void *arg) {
 
     vfe_dev->hw_info->vfe_ops.axi_ops.cfg_wm_xbar_reg(vfe_dev, stream_info, i);
   }
-  pr_err("cityman_vfe CFG_AXI_STREAM src=%d planes=%d\n",
+  pr_debug("cityman_vfe CFG_AXI_STREAM src=%d planes=%d\n",
          stream_info->stream_src, stream_info->num_planes);
   return rc;
 }
@@ -1150,7 +1150,7 @@ static int msm_isp_cfg_ping_pong_address(struct vfe_device *vfe_dev,
 
     if (rc < 0) {
       vfe_dev->error_info.stream_framedrop_count[stream_idx]++;
-      vfe_dev->error_info.framedrop_flag = 1; pr_err("cityman_vfe get_buf failed src=%d idx=%d\n", stream_info->stream_src, stream_idx);
+      vfe_dev->error_info.framedrop_flag = 1; pr_debug("cityman_vfe get_buf failed src=%d idx=%d\n", stream_info->stream_src, stream_idx);
       return rc;
     }
 
@@ -2159,7 +2159,7 @@ static int msm_isp_request_frame(struct vfe_device *vfe_dev,
   }
 
   spin_lock_irqsave(&stream_info->lock, flags);
-  pr_err("cityman_vfe request_frame stream=%x user=%x src=%d id=%d undelivered=%d\n",
+  pr_debug("cityman_vfe request_frame stream=%x user=%x src=%d id=%d undelivered=%d\n",
          stream_info->stream_id, user_stream_id, frame_src, frame_id, stream_info->undelivered_request_cnt);
   queue_req = &stream_info->request_queue_cmd[stream_info->request_q_idx];
   if (queue_req->cmd_used) {
@@ -2451,7 +2451,7 @@ void msm_isp_process_axi_irq(struct vfe_device *vfe_dev, uint32_t irq_status0,
   if (!(comp_mask || wm_mask))
     return;
 
-  pr_err_ratelimited("cityman_vfe axi irq s0=0x%x s1=0x%x comp=0x%x wm=0x%x\n",
+  pr_debug("cityman_vfe axi irq s0=0x%x s1=0x%x comp=0x%x wm=0x%x\n",
          irq_status0, irq_status1, comp_mask, wm_mask);
   ISP_DBG("%s: status: 0x%x\n", __func__, irq_status0);
   pingpong_status =

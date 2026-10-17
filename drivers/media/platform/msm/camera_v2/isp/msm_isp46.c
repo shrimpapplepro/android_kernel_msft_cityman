@@ -333,7 +333,7 @@ static void msm_vfe46_process_input_irq(struct vfe_device *vfe_dev,
 
 	if (irq_status0 & 0x1) {
 		vfe_dev->axi_data.src_info[VFE_PIX_0].camif_sof_frame_id++;
-		pr_err_ratelimited("cityman_vfe input_irq SOF s0=0x%x fid=%u\n", irq_status0,
+		pr_debug("cityman_vfe input_irq SOF s0=0x%x fid=%u\n", irq_status0,
 		       vfe_dev->axi_data.src_info[VFE_PIX_0].camif_sof_frame_id);
 		if (vfe_dev->axi_data.src_info[VFE_PIX_0].camif_sof_frame_id == 1) {
 			uint32_t s3b0, s3ac, s50;
@@ -349,7 +349,7 @@ static void msm_vfe46_process_input_irq(struct vfe_device *vfe_dev,
 			uint32_t s3bc = msm_camera_io_r(vfe_dev->vfe_base + 0x3BC);
 			uint32_t s3c0 = msm_camera_io_r(vfe_dev->vfe_base + 0x3C0);
 			uint32_t s3c8 = msm_camera_io_r(vfe_dev->vfe_base + 0x3C8);
-			pr_err("cityman_vfe SOF1_DUMP 3ac=%x 3b0=%x 3b4=%x 3b8=%x 3bc=%x 3c0=%x 3c8=%x 3a8=%x 3d0=%x\n",
+			pr_debug("cityman_vfe SOF1_DUMP 3ac=%x 3b0=%x 3b4=%x 3b8=%x 3bc=%x 3c0=%x 3c8=%x 3a8=%x 3d0=%x\n",
 				s3ac, s3b0, s3b4, s3b8, s3bc, s3c0, s3c8, s3a8, s3d0);
 		}
 	}
@@ -365,7 +365,7 @@ static void msm_vfe46_process_input_irq(struct vfe_device *vfe_dev,
 
 
 	if (irq_status0 & (1 << 1))
-		pr_err_ratelimited("cityman_vfe EOF IRQ fired! s0=0x%x fid=%u\n", irq_status0,
+		pr_debug("cityman_vfe EOF IRQ fired! s0=0x%x fid=%u\n", irq_status0,
 			vfe_dev->axi_data.src_info[VFE_PIX_0].camif_sof_frame_id);
 }
 
@@ -460,9 +460,19 @@ static void msm_vfe46_read_irq_status(struct vfe_device *vfe_dev,
 		uint32_t raw0 = *irq_status0, raw1 = *irq_status1;
 		*irq_status0 &= irq_mask0;
 		*irq_status1 &= irq_mask1;
+
+		/*
+		 * On cityman (MSM8994), hardware never asserts BIT(4) (PIX0_REG_UPDATE).
+		 * Synthesize BIT(4) on every EPOCH0 (BIT(2)) so that process_reg_update
+		 * processes pending PIX0 stream updates, enables WMs, and marks
+		 * registers as updated for each frame.
+		 */
+		if (*irq_status0 & BIT(2))
+			*irq_status0 |= BIT(4);
+
 		/* Log raw vs masked to spot filtered-out interrupts */
 		if (raw0 != *irq_status0 || raw1 != *irq_status1)
-			pr_err_ratelimited("cityman_vfe IRQ_MASK raw0=0x%x mask0=0x%x→0x%x raw1=0x%x mask1=0x%x→0x%x\n",
+			pr_debug("cityman_vfe IRQ_MASK raw0=0x%x mask0=0x%x→0x%x raw1=0x%x mask1=0x%x→0x%x\n",
 				raw0, irq_mask0, *irq_status0, raw1, irq_mask1, *irq_status1);
 	}
 	if (*irq_status1 & (1 << 0))
@@ -510,8 +520,7 @@ static void msm_vfe46_process_reg_update(struct vfe_device *vfe_dev,
 				msm_isp_notify(vfe_dev, ISP_EVENT_REG_UPDATE,
 					VFE_PIX_0, ts);
 				if (vfe_dev->axi_data.src_info[VFE_PIX_0].active) {
-					msm_isp_notify(vfe_dev, ISP_EVENT_SOF,
-						VFE_PIX_0, ts);
+					/* Re-arm reg_update for next frame (SOF is notified in process_epoch_irq) */
 					vfe_dev->hw_info->vfe_ops.core_ops.reg_update(
 						vfe_dev, VFE_PIX_0);
 				}
@@ -550,8 +559,14 @@ static void msm_vfe46_process_reg_update(struct vfe_device *vfe_dev,
 	}
 
 	spin_lock_irqsave(&vfe_dev->reg_update_lock, flags);
-	if (reg_updated & BIT(VFE_PIX_0))
+	if (reg_updated & BIT(VFE_PIX_0)) {
 		vfe_dev->reg_updated = 1;
+		vfe_dev->axi_data.src_info[VFE_PIX_0].reg_update_frame_id =
+			vfe_dev->axi_data.src_info[VFE_PIX_0].frame_id;
+		pr_debug("cityman_vfe PIX0 REG_UPDATE processed fid=%u stream_upd=%d\n",
+			vfe_dev->axi_data.src_info[VFE_PIX_0].frame_id,
+			vfe_dev->axi_data.stream_update[VFE_PIX_0]);
+	}
 
 	vfe_dev->reg_update_requested &= ~reg_updated;
 	spin_unlock_irqrestore(&vfe_dev->reg_update_lock, flags);
@@ -565,20 +580,57 @@ static void msm_vfe46_process_epoch_irq(struct vfe_device *vfe_dev,
 		return;
 
 	if (irq_status0 & BIT(2)) {
-		pr_err_ratelimited("cityman_vfe EPOCH0 IRQ s0=0x%x fid=%u\n",
-			irq_status0, vfe_dev->axi_data.src_info[VFE_PIX_0].frame_id);
+		uint32_t fid = vfe_dev->axi_data.src_info[VFE_PIX_0].frame_id;
+		pr_debug("cityman_vfe EPOCH0 IRQ s0=0x%x fid=%u\n",
+			irq_status0, fid);
+		if ((fid % 50) == 1) {
+			pr_err("cityman_vfe REG_DUMP fid=%u 0x44(mod)=0x%x 0x50(core)=0x%x 0x74(comp)=0x%x 0x80(reload)=0x%x 0x84(bus)=0x%x 0x374(halt)=0x%x 0x2a8(pp)=0x%x\n",
+				fid,
+				msm_camera_io_r(vfe_dev->vfe_base + 0x44),
+				msm_camera_io_r(vfe_dev->vfe_base + 0x50),
+				msm_camera_io_r(vfe_dev->vfe_base + 0x74),
+				msm_camera_io_r(vfe_dev->vfe_base + 0x80),
+				msm_camera_io_r(vfe_dev->vfe_base + 0x84),
+				msm_camera_io_r(vfe_dev->vfe_base + 0x374),
+				msm_camera_io_r(vfe_dev->vfe_base + 0x2A8));
+			pr_err("cityman_vfe REG_DUMP xbar 0x90=0x%x 0x94=0x%x\n",
+				msm_camera_io_r(vfe_dev->vfe_base + 0x90),
+				msm_camera_io_r(vfe_dev->vfe_base + 0x94));
+			pr_err("cityman_vfe REG_DUMP WM0 a0(cfg)=0x%x a4(ping)=0x%x a8(pong)=0x%x ac(acfg)=0x%x b4(size)=0x%x b8(buf)=0x%x c0(sub)=0x%x\n",
+				msm_camera_io_r(vfe_dev->vfe_base + 0xA0),
+				msm_camera_io_r(vfe_dev->vfe_base + 0xA4),
+				msm_camera_io_r(vfe_dev->vfe_base + 0xA8),
+				msm_camera_io_r(vfe_dev->vfe_base + 0xAC),
+				msm_camera_io_r(vfe_dev->vfe_base + 0xB4),
+				msm_camera_io_r(vfe_dev->vfe_base + 0xB8),
+				msm_camera_io_r(vfe_dev->vfe_base + 0xC0));
+			pr_err("cityman_vfe REG_DUMP WM1 c4(cfg)=0x%x c8(ping)=0x%x cc(pong)=0x%x d0(acfg)=0x%x d8(size)=0x%x dc(buf)=0x%x e4(sub)=0x%x\n",
+				msm_camera_io_r(vfe_dev->vfe_base + 0xC4),
+				msm_camera_io_r(vfe_dev->vfe_base + 0xC8),
+				msm_camera_io_r(vfe_dev->vfe_base + 0xCC),
+				msm_camera_io_r(vfe_dev->vfe_base + 0xD0),
+				msm_camera_io_r(vfe_dev->vfe_base + 0xD8),
+				msm_camera_io_r(vfe_dev->vfe_base + 0xDC),
+				msm_camera_io_r(vfe_dev->vfe_base + 0xE4));
+			pr_err("cityman_vfe REG_DUMP camif 3a8=0x%x 3ac=0x%x 3b4=0x%x 3d0=0x%x 3d4=0x%x\n",
+				msm_camera_io_r(vfe_dev->vfe_base + 0x3A8),
+				msm_camera_io_r(vfe_dev->vfe_base + 0x3AC),
+				msm_camera_io_r(vfe_dev->vfe_base + 0x3B4),
+				msm_camera_io_r(vfe_dev->vfe_base + 0x3D0),
+				msm_camera_io_r(vfe_dev->vfe_base + 0x3D4));
+			pr_err("cityman_vfe REG_DUMP demux 5cc=0x%x 5d0=0x%x 5d4=0x%x 5d8=0x%x scaler 75c=0x%x 7a4=0x%x\n",
+				msm_camera_io_r(vfe_dev->vfe_base + 0x5CC),
+				msm_camera_io_r(vfe_dev->vfe_base + 0x5D0),
+				msm_camera_io_r(vfe_dev->vfe_base + 0x5D4),
+				msm_camera_io_r(vfe_dev->vfe_base + 0x5D8),
+				msm_camera_io_r(vfe_dev->vfe_base + 0x75C),
+				msm_camera_io_r(vfe_dev->vfe_base + 0x7A4));
+		}
 		msm_isp_notify(vfe_dev, ISP_EVENT_SOF, VFE_PIX_0, ts);
 		ISP_DBG("%s: EPOCH0 IRQ\n", __func__);
 		msm_isp_update_framedrop_reg(vfe_dev, VFE_PIX_0);
 		msm_isp_update_stats_framedrop_reg(vfe_dev);
 		msm_isp_update_error_frame_count(vfe_dev);
-		if (vfe_dev->axi_data.src_info[VFE_PIX_0].raw_stream_count > 0 &&
-			vfe_dev->axi_data.src_info[VFE_PIX_0].pix_stream_count == 0) {
-			if (vfe_dev->axi_data.stream_update[VFE_PIX_0])
-				msm_isp_axi_stream_update(vfe_dev, VFE_PIX_0);
-			vfe_dev->hw_info->vfe_ops.core_ops.reg_update(
-				vfe_dev, VFE_PIX_0);
-		}
 	}
 }
 
@@ -756,7 +808,7 @@ static void msm_vfe46_cfg_framedrop(void __iomem *vfe_base,
 	    (stream_info->stream_src == PIX_VIEWFINDER ||
 	     stream_info->stream_src == PIX_ENCODER))
 		framedrop_pattern = 0xFFFFFFFF;
-	pr_err("cityman_vfe framedrop src=%u pat=0x%x per=%u\n",
+	pr_debug("cityman_vfe framedrop src=%u pat=0x%x per=%u\n",
 		stream_info->stream_src, framedrop_pattern,
 		framedrop_period);
 
@@ -1148,7 +1200,7 @@ static void msm_vfe46_cfg_camif(struct vfe_device *vfe_dev,
 	subsample_period = camif_cfg->subsample_cfg.irq_subsample_period;
 	subsample_pattern = camif_cfg->subsample_cfg.irq_subsample_pattern;
 
-	pr_err("cityman_vfe camif ppl %u lpf=%u win=%u..%u x %u..%u input=0x%x\n",
+	pr_debug("cityman_vfe camif ppl %u lpf=%u win=%u..%u x %u..%u input=0x%x\n",
 		camif_cfg->pixels_per_line, camif_cfg->lines_per_frame,
 		first_pixel, last_pixel, first_line, last_line,
 		camif_cfg->camif_input);
@@ -1180,7 +1232,7 @@ static void msm_vfe46_cfg_camif(struct vfe_device *vfe_dev,
 		 * We must let the CAMIF accept the full 5344x4016 frame from the sensor.
 		 */
 
-		pr_err("cityman_vfe camif eff ppl %u lpf=%u win=%u..%u x %u..%u\n",
+		pr_debug("cityman_vfe camif eff ppl %u lpf=%u win=%u..%u x %u..%u\n",
 			cityman_ppl, cityman_lpf, first_pixel, last_pixel, first_line, last_line);
 		
 		/*
@@ -1200,7 +1252,7 @@ static void msm_vfe46_cfg_camif(struct vfe_device *vfe_dev,
 		msm_camera_io_w(cityman_cache_3bc, vfe_dev->vfe_base + 0x3BC);
 	}
 
-	pr_err("cityman_vfe camif regs 3b4=0x%x 3b8=0x%x 3bc=0x%x\n",
+	pr_debug("cityman_vfe camif regs 3b4=0x%x 3b8=0x%x 3bc=0x%x\n",
 		cityman_cache_3b4, cityman_cache_3b8, cityman_cache_3bc);
 
 	if (subsample_period && subsample_pattern) {
@@ -1290,7 +1342,7 @@ static void msm_vfe46_update_camif_state(struct vfe_device *vfe_dev,
 		bus_en = 1;
 		vfe_en = 1;
 
-		pr_err("cityman_vfe stream counts: raw=%u pix=%u FORCING bus_en=%d vfe_en=%d\n",
+		pr_debug("cityman_vfe stream counts: raw=%u pix=%u FORCING bus_en=%d vfe_en=%d\n",
 			vfe_dev->axi_data.src_info[VFE_PIX_0].raw_stream_count,
 			vfe_dev->axi_data.src_info[VFE_PIX_0].pix_stream_count,
 			bus_en, vfe_en);
@@ -1319,20 +1371,30 @@ static void msm_vfe46_update_camif_state(struct vfe_device *vfe_dev,
 		/* 4. Write configuration */
 		val = saved_3ac;
 		val &= 0xFFFFFF3F;
-		val = val | bus_en << 7 | vfe_en << 6 | (1 << 20);
+		val = val | bus_en << 7 | vfe_en << 6;
 		msm_camera_io_w_mb(val, vfe_dev->vfe_base + 0x3AC);
 		
 		/* Don't write 0x3B0 — it's the EFS token register managed by HAL */
 		
 		/* Rewrite geometry */
+		msm_camera_io_w(cityman_cache_3b4, vfe_dev->vfe_base + 0x3B4);
+		msm_camera_io_w(cityman_cache_3b8, vfe_dev->vfe_base + 0x3B8);
+		msm_camera_io_w(cityman_cache_3bc, vfe_dev->vfe_base + 0x3BC);
 		msm_camera_io_w(sub, vfe_dev->vfe_base + 0x3C0);
 		msm_camera_io_w(epoch, vfe_dev->vfe_base + 0x3CC);
 		
 		/* 5. Enable CAMIF */
 		msm_camera_io_w_mb(0x1, vfe_dev->vfe_base + 0x3A8);
 
+		/* Initialize VFE 4.6 Demux hardware */
+		msm_camera_io_w_mb(0x01000001, vfe_dev->vfe_base + 0x5CC);
+		msm_camera_io_w_mb(0x01000100, vfe_dev->vfe_base + 0x5D0);
+		msm_camera_io_w_mb(0x00000100, vfe_dev->vfe_base + 0x5D4);
+		msm_camera_io_w_mb(0x00000100, vfe_dev->vfe_base + 0x5D8);
+		pr_err("cityman_vfe INIT DEMUX 0x5CC=0x01000001 0x5D0=0x01000100 0x5D4=0x100 0x5D8=0x100\n");
+
 		vfe_dev->axi_data.src_info[VFE_PIX_0].active = 1;
-		pr_err("cityman_vfe ENABLE_CAMIF 0x3ac=0x%x 0x3a8=0x1 active=1 bus_en=%d vfe_en=%d\n",
+		pr_debug("cityman_vfe ENABLE_CAMIF 0x3ac=0x%x 0x3a8=0x1 active=1 bus_en=%d vfe_en=%d\n",
 			val, bus_en, vfe_en);
 		{
 			uint32_t r50, r3a8, r3ac, r3b0, r3b4, r3b8, r3bc, r64, r68, r58, r5c, r39c;
@@ -1348,11 +1410,11 @@ static void msm_vfe46_update_camif_state(struct vfe_device *vfe_dev,
 			r58  = msm_camera_io_r(vfe_dev->vfe_base + 0x58);
 			r5c  = msm_camera_io_r(vfe_dev->vfe_base + 0x5C);
 			r39c = msm_camera_io_r(vfe_dev->vfe_base + 0x39C);
-			pr_err("cityman_vfe CAMIF_DUMP core_cfg(0x50)=0x%x camif_cmd(0x3a8)=0x%x camif_cfg(0x3ac)=0x%x\n",
+			pr_debug("cityman_vfe CAMIF_DUMP core_cfg(0x50)=0x%x camif_cmd(0x3a8)=0x%x camif_cfg(0x3ac)=0x%x\n",
 				r50, r3a8, r3ac);
-			pr_err("cityman_vfe CAMIF_DUMP efs(0x3b0)=0x%x frame(0x3b4)=0x%x pix_win(0x3b8)=0x%x line_win(0x3bc)=0x%x\n",
+			pr_debug("cityman_vfe CAMIF_DUMP efs(0x3b0)=0x%x frame(0x3b4)=0x%x pix_win(0x3b8)=0x%x line_win(0x3bc)=0x%x\n",
 				r3b0, r3b4, r3b8, r3bc);
-			pr_err("cityman_vfe CAMIF_DUMP irq_mask0(0x64)=0x%x irq_mask1(0x68)=0x%x irq_clr0(0x58)=0x%x irq_cfg(0x5c)=0x%x mux(0x39c)=0x%x\n",
+			pr_debug("cityman_vfe CAMIF_DUMP irq_mask0(0x64)=0x%x irq_mask1(0x68)=0x%x irq_clr0(0x58)=0x%x irq_cfg(0x5c)=0x%x mux(0x39c)=0x%x\n",
 				r64, r68, r58, r5c, r39c);
 		}
 		/* testgen GO*/
@@ -1361,14 +1423,14 @@ static void msm_vfe46_update_camif_state(struct vfe_device *vfe_dev,
 	} else if (update_state == DISABLE_CAMIF) {
 		msm_camera_io_w_mb(0x0, vfe_dev->vfe_base + 0x3A8);
 		vfe_dev->axi_data.src_info[VFE_PIX_0].active = 0;
-		pr_err("cityman_vfe DISABLE_CAMIF active=0\n");
+		pr_debug("cityman_vfe DISABLE_CAMIF active=0\n");
 		/* testgen OFF*/
 		if (vfe_dev->axi_data.src_info[VFE_PIX_0].input_mux == TESTGEN)
 			msm_camera_io_w(1 << 1, vfe_dev->vfe_base + 0xAF4);
 	} else if (update_state == DISABLE_CAMIF_IMMEDIATELY) {
 		msm_camera_io_w_mb(0x6, vfe_dev->vfe_base + 0x3A8);
 		vfe_dev->axi_data.src_info[VFE_PIX_0].active = 0;
-		pr_err("cityman_vfe DISABLE_CAMIF_IMMEDIATELY active=0\n");
+		pr_debug("cityman_vfe DISABLE_CAMIF_IMMEDIATELY active=0\n");
 		if (vfe_dev->axi_data.src_info[VFE_PIX_0].input_mux == TESTGEN)
 			msm_camera_io_w(1 << 1, vfe_dev->vfe_base + 0xAF4);
 	}
@@ -1989,6 +2051,8 @@ static void msm_vfe46_stats_update_cgc_override(struct vfe_device *vfe_dev,
 static bool msm_vfe46_is_module_cfg_lock_needed(
 	uint32_t reg_offset)
 {
+	if (reg_offset == 0x44 || reg_offset == 0x18)
+		return true;
 	return false;
 }
 

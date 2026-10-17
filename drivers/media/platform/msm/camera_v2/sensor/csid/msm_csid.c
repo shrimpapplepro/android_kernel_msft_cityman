@@ -37,7 +37,7 @@
 #define CSID_VERSION_V40 0x40000000
 #define MSM_CSID_DRV_NAME "msm_csid"
 
-#define DBG_CSID 0
+#define DBG_CSID 1
 
 /* #48: 0x3210 mapped phy1 (clock) as data (pkts=0, irq 0xd000dd).
  * 0x4320 keeps clock on phy1 and counts packets (header ECC).
@@ -56,7 +56,7 @@ module_param_named(lane_cnt, cityman_lane_cnt, int, 0644);
 MODULE_PARM_DESC(lane_cnt, "CSID lane_cnt override; -1 = DT/HAL");
 
 /* Stock CAF CORE_CTRL_1: 0xF. */
-static int cityman_ctrl1_or = 0xF;
+static int cityman_ctrl1_or = -1;
 module_param_named(ctrl1_or, cityman_ctrl1_or, int, 0644);
 MODULE_PARM_DESC(ctrl1_or, "OR into CSID CORE_CTRL_1; -1 = stock 0xF");
 
@@ -80,6 +80,10 @@ static DECLARE_DELAYED_WORK(cityman_csid_late, cityman_csid_late_fn);
 static void cityman_csid_late_fn(struct work_struct *w) {
   struct csid_device *d = cityman_late_csid;
   void __iomem *base;
+  void __iomem *ispif_base;
+  void __iomem *vfe_base;
+  void __iomem *clk_mux;
+
   if (!d || !d->base)
     return;
   base = d->base;
@@ -94,6 +98,47 @@ static void cityman_csid_late_fn(struct work_struct *w) {
          msm_camera_io_r(base + 0x8), msm_camera_io_r(base + 0x80),
          msm_camera_io_r(base + 0x84), msm_camera_io_r(base + 0x88),
          msm_camera_io_r(base + 0x8c));
+
+  ispif_base = ioremap(0xfda0a000, 0x500);
+  clk_mux = ioremap(0xfda00020, 0x10);
+  if (ispif_base) {
+    uint32_t p0_st = msm_camera_io_r(ispif_base + 0x2C0);
+    uint32_t r0_st = msm_camera_io_r(ispif_base + 0x2D0);
+    uint32_t irq_s0 = msm_camera_io_r(ispif_base + 0x21C);
+    pr_err("cityman_late ISPIF: ctrl0=0x%x irq_m0=0x%x irq_s0=0x%x in_sel=0x%x cmd0=0x%x pix0_mask=0x%x rdi0_mask=0x%x pix0_st=0x%x rdi0_st=0x%x clk_mux=0x%x rdi_mux=0x%x\n",
+           msm_camera_io_r(ispif_base + 0x200),
+           msm_camera_io_r(ispif_base + 0x208),
+           irq_s0,
+           msm_camera_io_r(ispif_base + 0x244),
+           msm_camera_io_r(ispif_base + 0x248),
+           msm_camera_io_r(ispif_base + 0x254),
+           msm_camera_io_r(ispif_base + 0x264),
+           p0_st,
+           r0_st,
+           clk_mux ? msm_camera_io_r(clk_mux) : 0,
+           clk_mux ? msm_camera_io_r(clk_mux + 0x8) : 0);
+    iounmap(ispif_base);
+  }
+  if (clk_mux)
+    iounmap(clk_mux);
+
+  vfe_base = ioremap(0xfda10000, 0x1000);
+  if (vfe_base) {
+    pr_err("cityman_late VFE0: core_cfg=0x%x irq_m0=0x%x irq_m1=0x%x irq_s0=0x%x irq_s1=0x%x camif_cmd=0x%x cfg=0x%x frame=0x%x win_x=0x%x win_y=0x%x camif_st=0x%x\n",
+           msm_camera_io_r(vfe_base + 0x50),
+           msm_camera_io_r(vfe_base + 0x5C),
+           msm_camera_io_r(vfe_base + 0x60),
+           msm_camera_io_r(vfe_base + 0x6C),
+           msm_camera_io_r(vfe_base + 0x70),
+           msm_camera_io_r(vfe_base + 0x3A8),
+           msm_camera_io_r(vfe_base + 0x3AC),
+           msm_camera_io_r(vfe_base + 0x3B4),
+           msm_camera_io_r(vfe_base + 0x3B8),
+           msm_camera_io_r(vfe_base + 0x3BC),
+           msm_camera_io_r(vfe_base + 0x3D0));
+    iounmap(vfe_base);
+  }
+
   if (++cityman_late_csid_iter < 8)
     schedule_delayed_work(&cityman_csid_late, msecs_to_jiffies(400));
 }

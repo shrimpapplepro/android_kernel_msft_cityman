@@ -441,7 +441,7 @@ int msm_isp_subscribe_event(struct v4l2_subdev *sd, struct v4l2_fh *fh,
                             struct v4l2_event_subscription *sub) {
   struct vfe_device *vfe_dev = v4l2_get_subdevdata(sd);
   int rc = 0;
-  pr_err_ratelimited("cityman_vfe subscribe type=0x%x id=%u flags=0x%x\n",
+  pr_debug("cityman_vfe subscribe type=0x%x id=%u flags=0x%x\n",
          sub->type, sub->id, sub->flags);
   rc = v4l2_event_subscribe(fh, sub, MAX_ISP_V4l2_EVENTS, NULL);
   if (rc == 0) {
@@ -468,19 +468,19 @@ int msm_isp_subscribe_event(struct v4l2_subdev *sd, struct v4l2_fh *fh,
       extra.type = ISP_EVENT_SOF | interface;
       extra_rc = v4l2_event_subscribe(fh, &extra, MAX_ISP_V4l2_EVENTS, NULL);
       if (extra_rc)
-        pr_err("cityman_vfe extra SOF|%u rc=%d\n", interface, extra_rc);
+        pr_debug("cityman_vfe extra SOF|%u rc=%d\n", interface, extra_rc);
     }
     extra.type = ISP_EVENT_BUF_DONE;
     extra_rc = v4l2_event_subscribe(fh, &extra, MAX_ISP_V4l2_EVENTS, NULL);
     if (extra_rc)
-      pr_err("cityman_vfe extra BUF_DONE rc=%d\n", extra_rc);
+      pr_debug("cityman_vfe extra BUF_DONE rc=%d\n", extra_rc);
     for (stream = 0; stream < MAX_NUM_STREAM; stream++) {
       extra.type = ISP_EVENT_BUF_DIVERT + stream;
       extra_rc = v4l2_event_subscribe(fh, &extra, MAX_ISP_V4l2_EVENTS, NULL);
       if (extra_rc)
-        pr_err("cityman_vfe extra DIVERT+%u rc=%d\n", stream, extra_rc);
+        pr_debug("cityman_vfe extra DIVERT+%u rc=%d\n", stream, extra_rc);
     }
-    pr_err("cityman_vfe extra SOF+BUF_DONE+DIVERT after mask 0x%x rc0=%d\n",
+    pr_debug("cityman_vfe extra SOF+BUF_DONE+DIVERT after mask 0x%x rc0=%d\n",
            sub->type, rc);
   }
   return rc;
@@ -619,7 +619,7 @@ int msm_isp_cfg_pix(struct vfe_device *vfe_dev,
 
   vfe_dev->axi_data.src_info[VFE_PIX_0].pixel_clock = input_cfg->input_pix_clk;
   if (vfe_dev->axi_data.src_info[VFE_PIX_0].pixel_clock != 600000000) {
-    pr_err("cityman_vfe pixclk %ld -> 600000000\n",
+    pr_debug("cityman_vfe pixclk %ld -> 600000000\n",
            vfe_dev->axi_data.src_info[VFE_PIX_0].pixel_clock);
     vfe_dev->axi_data.src_info[VFE_PIX_0].pixel_clock = 600000000;
   }
@@ -1018,6 +1018,80 @@ long msm_isp_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg) {
 }
 #endif /* CONFIG_COMPAT */
 
+static bool msm_isp_handle_demux_remap(struct vfe_device *vfe_dev,
+                                       struct msm_vfe_reg_cfg_cmd *reg_cfg_cmd,
+                                       uint32_t *data) {
+  uint32_t reg_offset = reg_cfg_cmd->u.rw_info.reg_offset;
+  uint32_t len = reg_cfg_cmd->u.rw_info.len;
+
+  if (reg_offset == 0x424) {
+    if (len >= 12) {
+      uint32_t en = data[0] & 1;
+      uint32_t gain_r_gr = data[1];
+      uint32_t gain_gb_b = data[2];
+      uint32_t r_gain = gain_r_gr & 0xFFF;
+      uint32_t gr_gain = (gain_r_gr >> 16) & 0xFFF;
+      uint32_t gb_gain = gain_gb_b & 0xFFF;
+      uint32_t b_gain = (gain_gb_b >> 16) & 0xFFF;
+
+      if (r_gain > 0 && r_gain < 0x100) {
+        r_gain <<= 1;
+        gr_gain <<= 1;
+        gb_gain <<= 1;
+        b_gain <<= 1;
+      }
+      if (r_gain == 0) r_gain = 0x100;
+      if (gr_gain == 0) gr_gain = 0x100;
+      if (gb_gain == 0) gb_gain = 0x100;
+      if (b_gain == 0) b_gain = 0x100;
+
+      uint32_t val_5cc = en ? 0x01000001 : 0;
+      uint32_t val_5d0 = (r_gain & 0xFFF) | ((gr_gain & 0xFFF) << 16);
+      uint32_t val_5d4 = gb_gain & 0xFFF;
+      uint32_t val_5d8 = b_gain & 0xFFF;
+
+      pr_err("cityman_vfe REMAPPED DEMUX 0x424 len=%u -> 0x5CC=0x%X 0x5D0=0x%X 0x5D4=0x%X 0x5D8=0x%X\n",
+             len, val_5cc, val_5d0, val_5d4, val_5d8);
+      msm_camera_io_w_mb(val_5cc, vfe_dev->vfe_base + 0x5CC);
+      msm_camera_io_w_mb(val_5d0, vfe_dev->vfe_base + 0x5D0);
+      msm_camera_io_w_mb(val_5d4, vfe_dev->vfe_base + 0x5D4);
+      msm_camera_io_w_mb(val_5d8, vfe_dev->vfe_base + 0x5D8);
+      return true;
+    } else {
+      uint32_t en = data[0] & 1;
+      uint32_t val_5cc = en ? 0x01000001 : 0;
+      pr_err("cityman_vfe REMAPPED DEMUX ENABLE 0x424 len=%u -> 0x5CC=0x%X\n", len, val_5cc);
+      msm_camera_io_w_mb(val_5cc, vfe_dev->vfe_base + 0x5CC);
+      return true;
+    }
+  } else if (reg_offset == 0x428) {
+    uint32_t gain_r_gr = data[0];
+    uint32_t gain_gb_b = (len >= 8) ? data[1] : data[0];
+    uint32_t r_gain = gain_r_gr & 0xFFF;
+    uint32_t gr_gain = (gain_r_gr >> 16) & 0xFFF;
+    uint32_t gb_gain = gain_gb_b & 0xFFF;
+    uint32_t b_gain = (gain_gb_b >> 16) & 0xFFF;
+
+    if (r_gain > 0 && r_gain < 0x100) {
+      r_gain <<= 1;
+      gr_gain <<= 1;
+      gb_gain <<= 1;
+      b_gain <<= 1;
+    }
+    uint32_t val_5d0 = (r_gain & 0xFFF) | ((gr_gain & 0xFFF) << 16);
+    uint32_t val_5d4 = gb_gain & 0xFFF;
+    uint32_t val_5d8 = b_gain & 0xFFF;
+
+    pr_err("cityman_vfe REMAPPED DEMUX GAIN 0x428 len=%u -> 0x5D0=0x%X 0x5D4=0x%X 0x5D8=0x%X\n",
+           len, val_5d0, val_5d4, val_5d8);
+    msm_camera_io_w_mb(val_5d0, vfe_dev->vfe_base + 0x5D0);
+    msm_camera_io_w_mb(val_5d4, vfe_dev->vfe_base + 0x5D4);
+    msm_camera_io_w_mb(val_5d8, vfe_dev->vfe_base + 0x5D8);
+    return true;
+  }
+  return false;
+}
+
 static int msm_isp_send_hw_cmd(struct vfe_device *vfe_dev,
                                struct msm_vfe_reg_cfg_cmd *reg_cfg_cmd,
                                uint32_t *cfg_data, uint32_t cmd_len) {
@@ -1061,13 +1135,15 @@ static int msm_isp_send_hw_cmd(struct vfe_device *vfe_dev,
       uint32_t offset = reg_cfg_cmd->u.rw_info.reg_offset;
       uint32_t len = reg_cfg_cmd->u.rw_info.len;
       if (offset >= 0x200 && offset <= 0x800) {
-        pr_err("cityman_vfe REG_WRITE offset=0x%X len=%u\n", offset, len);
+        if (offset != 0x5D0 && offset != 0x638) {
+          pr_debug("cityman_vfe REG_WRITE offset=0x%X len=%u\n", offset, len);
+        }
       } else if (offset < 0x200) {
         uint32_t *data = (uint32_t *)(cfg_data + reg_cfg_cmd->u.rw_info.cmd_data_offset / 4);
-        pr_err("cityman_vfe REG_WRITE_LOW offset=0x%X len=%u val=0x%X\n", offset, len, data[0]);
+        pr_debug("cityman_vfe REG_WRITE_LOW offset=0x%X len=%u val=0x%X\n", offset, len, data[0]);
       }
-      if ((offset <= 0x3B4) && ((offset + len) > 0x3B4)) {
-        pr_err("cityman_vfe HAL writing to CAMIF offset=0x%X len=%u. We will fix it up afterwards.\n", offset, len);
+      if ((offset <= 0x3CC) && ((offset + len) >= 0x37C)) {
+        pr_debug("cityman_vfe HAL attempted write to CAMIF range offset=0x%X len=%u (blocking CAMIF 0x37C..0x3CC)\n", offset, len);
       }
     }
     
@@ -1127,8 +1203,23 @@ static int msm_isp_send_hw_cmd(struct vfe_device *vfe_dev,
   case VFE_WRITE: {
     int i;
     uint32_t *data = (uint32_t *)(cfg_data + reg_cfg_cmd->u.rw_info.cmd_data_offset / 4);
+    if (msm_isp_handle_demux_remap(vfe_dev, reg_cfg_cmd, data))
+      break;
     for (i = 0; i < reg_cfg_cmd->u.rw_info.len; i += 4) {
       uint32_t current_offset = reg_cfg_cmd->u.rw_info.reg_offset + i;
+      if (current_offset >= 0x37C && current_offset <= 0x3CC) {
+        pr_debug("cityman_vfe BLOCKED HAL write offset=0x%X val=0x%X\n",
+                           current_offset, data[i / 4]);
+        continue;
+      }
+      if (current_offset == 0x18) {
+        data[i / 4] &= ~BIT(0); /* Clear Bit 0 to bypass Linearization */
+        pr_debug("cityman_vfe REMAPPED HAL write offset 0x18 -> 0x44 val=0x%X (bypassing linearization bit 0)\n", data[i / 4]);
+        current_offset = 0x44;
+      } else if (current_offset == 0x888) {
+        pr_debug("cityman_vfe REMAPPED HAL write offset 0x888 -> 0x9B8 val=0x%X\n", data[i / 4]);
+        current_offset = 0x9B8;
+      }
       msm_camera_io_w(data[i / 4], vfe_dev->vfe_base + current_offset);
     }
     break;
@@ -1136,8 +1227,23 @@ static int msm_isp_send_hw_cmd(struct vfe_device *vfe_dev,
   case VFE_WRITE_MB: {
     int i;
     uint32_t *data = (uint32_t *)(cfg_data + reg_cfg_cmd->u.rw_info.cmd_data_offset / 4);
+    if (msm_isp_handle_demux_remap(vfe_dev, reg_cfg_cmd, data))
+      break;
     for (i = 0; i < reg_cfg_cmd->u.rw_info.len; i += 4) {
       uint32_t current_offset = reg_cfg_cmd->u.rw_info.reg_offset + i;
+      if (current_offset >= 0x37C && current_offset <= 0x3CC) {
+        pr_debug("cityman_vfe BLOCKED HAL write_mb offset=0x%X val=0x%X\n",
+                           current_offset, data[i / 4]);
+        continue;
+      }
+      if (current_offset == 0x18) {
+        data[i / 4] &= ~BIT(0); /* Clear Bit 0 to bypass Linearization */
+        pr_debug("cityman_vfe REMAPPED HAL write_mb offset 0x18 -> 0x44 val=0x%X (bypassing linearization bit 0)\n", data[i / 4]);
+        current_offset = 0x44;
+      } else if (current_offset == 0x888) {
+        pr_debug("cityman_vfe REMAPPED HAL write_mb offset 0x888 -> 0x9B8 val=0x%X\n", data[i / 4]);
+        current_offset = 0x9B8;
+      }
       msm_camera_io_w_mb(data[i / 4], vfe_dev->vfe_base + current_offset);
     }
     break;
@@ -1146,29 +1252,48 @@ static int msm_isp_send_hw_cmd(struct vfe_device *vfe_dev,
     uint32_t temp;
     bool grab_lock;
     unsigned long flags;
-    if ((UINT_MAX - sizeof(temp) < reg_cfg_cmd->u.mask_info.reg_offset) ||
+    uint32_t reg_offset = reg_cfg_cmd->u.mask_info.reg_offset;
+    if ((UINT_MAX - sizeof(temp) < reg_offset) ||
         (resource_size(vfe_dev->vfe_mem) <
-         reg_cfg_cmd->u.mask_info.reg_offset + sizeof(temp))) {
+         reg_offset + sizeof(temp))) {
       pr_err("%s: VFE_CFG_MASK: Invalid length\n", __func__);
       return -EINVAL;
     }
     
-    pr_err("cityman_vfe VFE_CFG_MASK offset=0x%X mask=0x%X val=0x%X\n",
-           reg_cfg_cmd->u.mask_info.reg_offset,
+    if (reg_offset >= 0x37C && reg_offset <= 0x3CC) {
+      pr_debug("cityman_vfe BLOCKED HAL mask offset=0x%X\n",
+                         reg_offset);
+      break;
+    }
+
+    if (reg_offset == 0x18) {
+      reg_offset = 0x44;
+      reg_cfg_cmd->u.mask_info.val &= ~BIT(0); /* Clear Bit 0 to bypass Linearization */
+      reg_cfg_cmd->u.mask_info.mask |= BIT(0); /* Force Bit 0 to be cleared in hardware */
+      pr_debug("cityman_vfe REMAPPED HAL mask offset 0x18 -> 0x44 mask=0x%X val=0x%X (bypassing linearization bit 0)\n",
+             reg_cfg_cmd->u.mask_info.mask, reg_cfg_cmd->u.mask_info.val);
+    } else if (reg_offset == 0x888) {
+      pr_debug("cityman_vfe REMAPPED HAL mask offset 0x888 -> 0x9B8 mask=0x%X val=0x%X\n",
+             reg_cfg_cmd->u.mask_info.mask, reg_cfg_cmd->u.mask_info.val);
+      reg_offset = 0x9B8;
+    }
+
+    pr_debug("cityman_vfe VFE_CFG_MASK offset=0x%X mask=0x%X val=0x%X\n",
+           reg_offset,
            reg_cfg_cmd->u.mask_info.mask,
            reg_cfg_cmd->u.mask_info.val);
 
     grab_lock = vfe_dev->hw_info->vfe_ops.core_ops.is_module_cfg_lock_needed(
-        reg_cfg_cmd->u.mask_info.reg_offset);
+        reg_offset);
     if (grab_lock)
       spin_lock_irqsave(&vfe_dev->shared_data_lock, flags);
     temp = msm_camera_io_r(vfe_dev->vfe_base +
-                           reg_cfg_cmd->u.mask_info.reg_offset);
+                           reg_offset);
 
     temp &= ~reg_cfg_cmd->u.mask_info.mask;
     temp |= reg_cfg_cmd->u.mask_info.val;
     msm_camera_io_w(temp,
-                    vfe_dev->vfe_base + reg_cfg_cmd->u.mask_info.reg_offset);
+                    vfe_dev->vfe_base + reg_offset);
     if (grab_lock)
       spin_unlock_irqrestore(&vfe_dev->shared_data_lock, flags);
     break;
@@ -1267,11 +1392,15 @@ static int msm_isp_send_hw_cmd(struct vfe_device *vfe_dev,
           (UINT_MAX / sizeof(*data_ptr) < (data_ptr - cfg_data)) ||
           (sizeof(*data_ptr) * (data_ptr - cfg_data) >= cmd_len))
         return -EINVAL;
-      if (reg_cfg_cmd->u.rw_info.reg_offset == 0) {
+      uint32_t current_offset = reg_cfg_cmd->u.rw_info.reg_offset;
+      if (current_offset == 0) {
         *data_ptr++ = 0x4000000A; /* spoof VFE44_8084V1_VERSION for vendor blobs */
+      } else if (current_offset == 0x18) {
+        *data_ptr++ = msm_camera_io_r(vfe_dev->vfe_base + 0x44);
+      } else if (current_offset == 0x888) {
+        *data_ptr++ = msm_camera_io_r(vfe_dev->vfe_base + 0x9B8);
       } else {
-        *data_ptr++ = msm_camera_io_r(vfe_dev->vfe_base +
-                                      reg_cfg_cmd->u.rw_info.reg_offset);
+        *data_ptr++ = msm_camera_io_r(vfe_dev->vfe_base + current_offset);
       }
       reg_cfg_cmd->u.rw_info.reg_offset += 4;
     }
@@ -1729,7 +1858,7 @@ static void msm_isp_process_overflow_irq(struct vfe_device *vfe_dev,
   if (overflow_mask) {
     struct msm_isp_event_data error_event;
 
-    pr_err("cityman_vfe overflow mask=0x%x s0=0x%x s1=0x%x\n", overflow_mask,
+    pr_debug("cityman_vfe overflow mask=0x%x s0=0x%x s1=0x%x\n", overflow_mask,
            *irq_status0, *irq_status1);
 
     if (vfe_dev->reset_pending == 1) {
@@ -1874,7 +2003,7 @@ void msm_isp_do_tasklet(unsigned long data) {
       continue;
     }
     if (vfe_dev->pdev->id == 0 || vfe_dev->pdev->id == 1)
-      pr_err_ratelimited("cityman_vfe IRQ s0=0x%x s1=0x%x camif_status(0x3d0)=0x%x\n", irq_status0, irq_status1, msm_camera_io_r(vfe_dev->vfe_base + 0x3D0));
+      pr_debug("cityman_vfe IRQ s0=0x%x s1=0x%x camif_status(0x3d0)=0x%x\n", irq_status0, irq_status1, msm_camera_io_r(vfe_dev->vfe_base + 0x3D0));
     ISP_DBG("%s: vfe_id %d status0: 0x%x status1: 0x%x\n", __func__,
             vfe_dev->pdev->id, irq_status0, irq_status1);
     irq_ops->process_reset_irq(vfe_dev, irq_status0, irq_status1);

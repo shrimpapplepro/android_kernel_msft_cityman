@@ -1,0 +1,130 @@
+/*
+ * Energy model for EAS (Energy-Aware Scheduling) on MSM8994 (Cityman).
+ *
+ * busy-cost-data: pairs of <normalized_capacity power_mW>
+ *   capacity is on a 0-1024 scale where 1024 = A57 @ 1958.4 MHz.
+ *   A53 capacities are scaled down by ~0.65 IPC factor vs A57.
+ *
+ * idle-cost-data: <wfi_mW retention_mW power_collapse_mW>
+ *
+ * Copyright (c) 2024, The LineageOS Project
+ * SPDX-License-Identifier: GPL-2.0-only
+ */
+
+/ {
+	energy_costs: energy-costs {
+		compatible = "sched-energy";
+
+		/* ---- Cortex-A53 (LITTLE) core-level costs ---- */
+		/*
+		 * A53 max capacity = (1555200/1958400) * 1024 * 0.65 = ~529
+		 * Each OPP: cap = (freq/1958400) * 1024 * 0.65
+		 */
+		CPU_COST_A53: core-cost-a53 {
+			busy-cost-data = <
+				131   35    /*  384000 kHz */
+				156   45    /*  460800 kHz */
+				204   60    /*  600000 kHz */
+				228   70    /*  672000 kHz */
+				261   85    /*  768000 kHz */
+				293  100    /*  864000 kHz */
+				326  120    /*  960000 kHz */
+				424  175    /* 1248000 kHz */
+				457  200    /* 1344000 kHz */
+				502  240    /* 1478400 kHz */
+				529  265    /* 1555200 kHz */
+			>;
+			idle-cost-data = <
+				15   /* WFI */
+				10   /* Retention */
+				 0   /* Power collapse */
+			>;
+		};
+
+		/* ---- Cortex-A57 (big) core-level costs ---- */
+		/*
+		 * A57 max capacity = 1024 (reference)
+		 * Each OPP: cap = (freq/1958400) * 1024
+		 */
+		CPU_COST_A57: core-cost-a57 {
+			busy-cost-data = <
+				201   95    /*  384000 kHz */
+				251  120    /*  480000 kHz */
+				331  160    /*  633600 kHz */
+				402  200    /*  768000 kHz */
+				452  235    /*  864000 kHz */
+				502  270    /*  960000 kHz */
+				653  390    /* 1248000 kHz */
+				703  430    /* 1344000 kHz */
+				753  480    /* 1440000 kHz */
+				803  530    /* 1536000 kHz */
+				854  590    /* 1632000 kHz */
+				904  660    /* 1728000 kHz */
+				954  740    /* 1824000 kHz */
+			       1024  850    /* 1958400 kHz */
+			>;
+			idle-cost-data = <
+				40   /* WFI */
+				25   /* Retention */
+				 0   /* Power collapse */
+			>;
+		};
+
+		/* ---- Cortex-A53 (LITTLE) cluster-level costs ---- */
+		CLUSTER_COST_A53: cluster-cost-a53 {
+			busy-cost-data = <
+				131   25    /*  384000 kHz */
+				156   30    /*  460800 kHz */
+				204   38    /*  600000 kHz */
+				228   43    /*  672000 kHz */
+				261   50    /*  768000 kHz */
+				293   58    /*  864000 kHz */
+				326   68    /*  960000 kHz */
+				424   95    /* 1248000 kHz */
+				457  108    /* 1344000 kHz */
+				502  125    /* 1478400 kHz */
+				529  138    /* 1555200 kHz */
+			>;
+			idle-cost-data = <
+				25   /* WFI */
+				18   /* Retention */
+				 0   /* Power collapse */
+			>;
+		};
+
+		/* ---- Cortex-A57 (big) cluster-level costs ---- */
+		CLUSTER_COST_A57: cluster-cost-a57 {
+			busy-cost-data = <
+				201   65    /*  384000 kHz */
+				251   80    /*  480000 kHz */
+				331  110    /*  633600 kHz */
+				402  140    /*  768000 kHz */
+				452  165    /*  864000 kHz */
+				502  195    /*  960000 kHz */
+				653  280    /* 1248000 kHz */
+				703  315    /* 1344000 kHz */
+				753  355    /* 1440000 kHz */
+				803  400    /* 1536000 kHz */
+				854  450    /* 1632000 kHz */
+				904  510    /* 1728000 kHz */
+				954  575    /* 1824000 kHz */
+			       1024  670    /* 1958400 kHz */
+			>;
+			idle-cost-data = <
+				55   /* WFI */
+				35   /* Retention */
+				 0   /* Power collapse */
+			>;
+		};
+	};
+};
+
+/* Attach energy costs to CPU nodes (core @ index 0, cluster @ index 1) */
+&CPU0 { sched-energy-costs = <&CPU_COST_A53 &CLUSTER_COST_A53>; };
+&CPU1 { sched-energy-costs = <&CPU_COST_A53 &CLUSTER_COST_A53>; };
+&CPU2 { sched-energy-costs = <&CPU_COST_A53 &CLUSTER_COST_A53>; };
+&CPU3 { sched-energy-costs = <&CPU_COST_A53 &CLUSTER_COST_A53>; };
+&CPU4 { sched-energy-costs = <&CPU_COST_A57 &CLUSTER_COST_A57>; };
+&CPU5 { sched-energy-costs = <&CPU_COST_A57 &CLUSTER_COST_A57>; };
+&CPU6 { sched-energy-costs = <&CPU_COST_A57 &CLUSTER_COST_A57>; };
+&CPU7 { sched-energy-costs = <&CPU_COST_A57 &CLUSTER_COST_A57>; };

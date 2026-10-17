@@ -33175,8 +33175,7 @@ static inline void wma_update_target_services(tp_wma_handle wh,
 		gFwWlanFeatCaps |= (1 << EXTENDED_SCAN);
 	}
 #endif
-	cfg->lte_coex_ant_share = WMI_SERVICE_IS_ENABLED(wh->wmi_service_bitmap,
-					WMI_SERVICE_LTE_ANT_SHARE_SUPPORT);
+	cfg->lte_coex_ant_share = 0;
 	cfg->per_band_chainmask_supp = WMI_SERVICE_IS_ENABLED(
 			wh->wmi_service_bitmap,
 			WMI_SERVICE_PER_BAND_CHAINMASK_SUPPORT);

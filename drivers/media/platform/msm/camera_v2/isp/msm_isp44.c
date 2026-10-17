@@ -301,7 +301,7 @@ static void msm_vfe44_process_input_irq(struct vfe_device *vfe_dev,
   if (irq_status0 & 0x1)
     vfe_dev->axi_data.src_info[VFE_PIX_0].camif_sof_frame_id++;
   if (irq_status0 & 0x3) {
-    pr_err_ratelimited("cityman_vfe camif irq s0=0x%x s1=0x%x sof=%d eof=%d fid=%u "
+    pr_debug("cityman_vfe camif irq s0=0x%x s1=0x%x sof=%d eof=%d fid=%u "
            "st=0x%x\n",
            irq_status0, irq_status1,
            !!(irq_status0 & 1), !!(irq_status0 & 2),
@@ -582,7 +582,7 @@ static void msm_vfe44_process_epoch_irq(struct vfe_device *vfe_dev,
     return;
 
   if (irq_status0 & BIT(2)) {
-    pr_err_ratelimited("cityman_vfe camif EPOCH0 s0=0x%x fid=%u\n",
+    pr_debug("cityman_vfe camif EPOCH0 s0=0x%x fid=%u\n",
            irq_status0,
            vfe_dev->axi_data.src_info[VFE_PIX_0].camif_sof_frame_id);
     msm_isp_notify(vfe_dev, ISP_EVENT_SOF, VFE_PIX_0, ts);

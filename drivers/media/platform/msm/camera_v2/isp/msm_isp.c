@@ -327,7 +327,7 @@ void msm_isp_update_req_history(uint32_t client, uint64_t ab, uint64_t ib,
 #ifdef CONFIG_COMPAT
 static long msm_isp_dqevent(struct file *file, struct v4l2_fh *vfh, void *arg) {
   long rc;
-  pr_err_ratelimited("cityman_vfe dqevent enter compat=%d\n", is_compat_task());
+  pr_debug("cityman_vfe dqevent enter compat=%d\n", is_compat_task());
   if (is_compat_task()) {
     struct msm_isp_event_data32 *event_data32;
     struct msm_isp_event_data *event_data;
@@ -337,7 +337,7 @@ static long msm_isp_dqevent(struct file *file, struct v4l2_fh *vfh, void *arg) {
     memset(&isp_event, 0, sizeof(isp_event));
     rc = v4l2_event_dequeue(vfh, &isp_event, file->f_flags & O_NONBLOCK);
     if (!rc) {
-      pr_err_ratelimited("cityman_vfe dqevent type=0x%x\n", isp_event.type);
+      pr_debug("cityman_vfe dqevent type=0x%x\n", isp_event.type);
     }
     if (rc)
       return rc;
@@ -401,7 +401,7 @@ static long msm_isp_subdev_fops_compat_ioctl(struct file *file,
    * and recurses (#111 bootloop).
    */
   if (_IOC_TYPE(cmd) != 'V' || _IOC_NR(cmd) != 89) {
-    pr_err_ratelimited("cityman_vfe compat ioctl cmd=0x%x type=%c nr=%u\n", cmd,
+    pr_debug("cityman_vfe compat ioctl cmd=0x%x type=%c nr=%u\n", cmd,
            (char)_IOC_TYPE(cmd), _IOC_NR(cmd));
   }
   if (_IOC_TYPE(cmd) == 'V' && _IOC_NR(cmd) == 89)

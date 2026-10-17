@@ -26,6 +26,30 @@
 
 #include "../../kernel/sched/sched.h"
 
+/*
+ * sched_set_boost() is a Qualcomm HMP scheduler API that does not exist
+ * in EAS-based kernels.  EAS handles big-core migration via the energy
+ * model instead, so this is a harmless no-op.
+ */
+static inline int sched_set_boost(int enable) { return 0; }
+
+/*
+ * queuing_blocked() was removed in newer kthread_worker APIs.
+ * Replicate its semantics: return true when the work item is
+ * already pending (node.next != NULL means it is on a list).
+ */
+static inline bool queuing_blocked(struct kthread_worker *worker,
+				   struct kthread_work *work)
+{
+	unsigned long flags;
+	bool pending;
+
+	spin_lock_irqsave(&worker->lock, flags);
+	pending = !list_empty(&work->node);
+	spin_unlock_irqrestore(&worker->lock, flags);
+	return pending;
+}
+
 struct cpu_sync {
 	int cpu;
 	unsigned int input_boost_min;
@@ -324,9 +348,10 @@ static int cpu_boost_init(void)
 	init_kthread_worker(&cpu_boost_worker);
 	cpu_boost_worker_thread = kthread_run(kthread_worker_fn,
 		&cpu_boost_worker, "cpu_boost_worker_thread");
-	if (IS_ERR(cpu_boost_worker_thread))
+	if (IS_ERR(cpu_boost_worker_thread)) {
 		pr_err("cpu-boost: Failed to init kworker!\n");
 		return -EFAULT;
+	}
 
 	ret = sched_setscheduler(cpu_boost_worker_thread, SCHED_FIFO, &param);
 	if (ret)

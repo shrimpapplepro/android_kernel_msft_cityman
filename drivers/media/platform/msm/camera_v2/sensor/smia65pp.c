@@ -1338,6 +1338,7 @@ static void smia65pp_after_qcam_i2c(struct msm_sensor_ctrl_t *s_ctrl) {
     }
   }
 
+
   if (cityman_wp_sensor_analog) {
     if (!smia65pp_supplies_done) {
       supplies = smia65pp_wp_smiapp_supplies(s_ctrl);
