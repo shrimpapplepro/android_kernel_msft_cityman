@@ -12,6 +12,7 @@
 #include <linux/io.h>
 #include <linux/mutex.h>
 #include <linux/ratelimit.h>
+#include <linux/module.h>
 #include <media/v4l2-subdev.h>
 
 #include "msm.h"
@@ -19,6 +20,15 @@
 #include "msm_isp_axi_util.h"
 #include "msm_isp_stats_util.h"
 #include "msm_isp_util.h"
+
+/*
+ * 0: msm8992 (VFE44) camera userspace: spoof VFE44_8084V1 and remap/block its
+ *    register writes (demux, 0x18, 0x888, CAMIF range) onto this VFE46.
+ * 1: msm8994-native (VFE46) userspace: real HW version, writes pass through.
+ */
+static int cityman_vfe_native = 1;
+module_param_named(vfe_native, cityman_vfe_native, int, 0644);
+MODULE_PARM_DESC(vfe_native, "1 = VFE46-native camera blobs (no VFE44 spoof/remaps)");
 
 #define MAX_ISP_V4l2_EVENTS 100
 
@@ -1024,6 +1034,8 @@ static bool msm_isp_handle_demux_remap(struct vfe_device *vfe_dev,
   uint32_t reg_offset = reg_cfg_cmd->u.rw_info.reg_offset;
   uint32_t len = reg_cfg_cmd->u.rw_info.len;
 
+  if (cityman_vfe_native)
+    return false;
   if (reg_offset == 0x424) {
     if (len >= 12) {
       uint32_t en = data[0] & 1;
@@ -1207,16 +1219,16 @@ static int msm_isp_send_hw_cmd(struct vfe_device *vfe_dev,
       break;
     for (i = 0; i < reg_cfg_cmd->u.rw_info.len; i += 4) {
       uint32_t current_offset = reg_cfg_cmd->u.rw_info.reg_offset + i;
-      if (current_offset >= 0x37C && current_offset <= 0x3CC) {
+      if (!cityman_vfe_native && current_offset >= 0x37C && current_offset <= 0x3CC) {
         pr_debug("cityman_vfe BLOCKED HAL write offset=0x%X val=0x%X\n",
                            current_offset, data[i / 4]);
         continue;
       }
-      if (current_offset == 0x18) {
+      if (!cityman_vfe_native && current_offset == 0x18) {
         data[i / 4] &= ~BIT(0); /* Clear Bit 0 to bypass Linearization */
         pr_debug("cityman_vfe REMAPPED HAL write offset 0x18 -> 0x44 val=0x%X (bypassing linearization bit 0)\n", data[i / 4]);
         current_offset = 0x44;
-      } else if (current_offset == 0x888) {
+      } else if (!cityman_vfe_native && current_offset == 0x888) {
         pr_debug("cityman_vfe REMAPPED HAL write offset 0x888 -> 0x9B8 val=0x%X\n", data[i / 4]);
         current_offset = 0x9B8;
       }
@@ -1231,16 +1243,16 @@ static int msm_isp_send_hw_cmd(struct vfe_device *vfe_dev,
       break;
     for (i = 0; i < reg_cfg_cmd->u.rw_info.len; i += 4) {
       uint32_t current_offset = reg_cfg_cmd->u.rw_info.reg_offset + i;
-      if (current_offset >= 0x37C && current_offset <= 0x3CC) {
+      if (!cityman_vfe_native && current_offset >= 0x37C && current_offset <= 0x3CC) {
         pr_debug("cityman_vfe BLOCKED HAL write_mb offset=0x%X val=0x%X\n",
                            current_offset, data[i / 4]);
         continue;
       }
-      if (current_offset == 0x18) {
+      if (!cityman_vfe_native && current_offset == 0x18) {
         data[i / 4] &= ~BIT(0); /* Clear Bit 0 to bypass Linearization */
         pr_debug("cityman_vfe REMAPPED HAL write_mb offset 0x18 -> 0x44 val=0x%X (bypassing linearization bit 0)\n", data[i / 4]);
         current_offset = 0x44;
-      } else if (current_offset == 0x888) {
+      } else if (!cityman_vfe_native && current_offset == 0x888) {
         pr_debug("cityman_vfe REMAPPED HAL write_mb offset 0x888 -> 0x9B8 val=0x%X\n", data[i / 4]);
         current_offset = 0x9B8;
       }
@@ -1260,19 +1272,19 @@ static int msm_isp_send_hw_cmd(struct vfe_device *vfe_dev,
       return -EINVAL;
     }
     
-    if (reg_offset >= 0x37C && reg_offset <= 0x3CC) {
+    if (!cityman_vfe_native && reg_offset >= 0x37C && reg_offset <= 0x3CC) {
       pr_debug("cityman_vfe BLOCKED HAL mask offset=0x%X\n",
                          reg_offset);
       break;
     }
 
-    if (reg_offset == 0x18) {
+    if (!cityman_vfe_native && reg_offset == 0x18) {
       reg_offset = 0x44;
       reg_cfg_cmd->u.mask_info.val &= ~BIT(0); /* Clear Bit 0 to bypass Linearization */
       reg_cfg_cmd->u.mask_info.mask |= BIT(0); /* Force Bit 0 to be cleared in hardware */
       pr_debug("cityman_vfe REMAPPED HAL mask offset 0x18 -> 0x44 mask=0x%X val=0x%X (bypassing linearization bit 0)\n",
              reg_cfg_cmd->u.mask_info.mask, reg_cfg_cmd->u.mask_info.val);
-    } else if (reg_offset == 0x888) {
+    } else if (!cityman_vfe_native && reg_offset == 0x888) {
       pr_debug("cityman_vfe REMAPPED HAL mask offset 0x888 -> 0x9B8 mask=0x%X val=0x%X\n",
              reg_cfg_cmd->u.mask_info.mask, reg_cfg_cmd->u.mask_info.val);
       reg_offset = 0x9B8;
@@ -1393,7 +1405,9 @@ static int msm_isp_send_hw_cmd(struct vfe_device *vfe_dev,
           (sizeof(*data_ptr) * (data_ptr - cfg_data) >= cmd_len))
         return -EINVAL;
       uint32_t current_offset = reg_cfg_cmd->u.rw_info.reg_offset;
-      if (current_offset == 0) {
+      if (cityman_vfe_native) {
+        *data_ptr++ = msm_camera_io_r(vfe_dev->vfe_base + current_offset);
+      } else if (current_offset == 0) {
         *data_ptr++ = 0x4000000A; /* spoof VFE44_8084V1_VERSION for vendor blobs */
       } else if (current_offset == 0x18) {
         *data_ptr++ = msm_camera_io_r(vfe_dev->vfe_base + 0x44);
