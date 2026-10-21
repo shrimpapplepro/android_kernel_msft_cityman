@@ -38,7 +38,7 @@
 		qcom,slave-id = <0x20 0x0000 0>;
 		qcom,csiphy-sd-index = <0>;
 		qcom,csid-sd-index = <0>;
-		qcom,mount-angle = <90>;
+		qcom,mount-angle = <270>; /* rear IMX230 sits rotated 180 deg vs the Motorola module: 90 gave an upside-down preview */
 		qcom,sensor-name = "mot_imx230";
 		qcom,sensor-position = <0>;
 		qcom,sensor-mode = <0>;
