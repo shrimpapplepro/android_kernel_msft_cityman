@@ -832,11 +832,13 @@ static int cityman_colorbars = 0;
 module_param_named(colorbars, cityman_colorbars, int, 0644);
 MODULE_PARM_DESC(colorbars, "Enable sensor test pattern color bars (default 0=off, 1=on)");
 
-static int cityman_exp_lines = 1500;
+/* 0 = let AEC drive 0x0202/0x0204. A non-zero value is re-written after every
+ * HAL I2C table (AEC updates included), pinning exposure: dark, static preview. */
+static int cityman_exp_lines = 0;
 module_param_named(exp_lines, cityman_exp_lines, int, 0644);
 MODULE_PARM_DESC(exp_lines, "Default coarse integration time in lines (default 1500)");
 
-static int cityman_gain = 256;
+static int cityman_gain = 0;
 module_param_named(gain, cityman_gain, int, 0644);
 MODULE_PARM_DESC(gain, "Default analogue gain code (default 256 = 2.0x)");
 
