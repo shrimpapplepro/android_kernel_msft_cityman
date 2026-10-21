@@ -1338,12 +1338,15 @@ static void smia65pp_after_qcam_i2c(struct msm_sensor_ctrl_t *s_ctrl) {
     uint16_t pre = 0, mult = 0;
     smia65pp_read(s_ctrl, 0x0304, &pre, MSM_CAMERA_I2C_WORD_DATA);
     smia65pp_read(s_ctrl, 0x0306, &mult, MSM_CAMERA_I2C_WORD_DATA);
-    if (pre == 4 && mult == 200) {
+    /* Every Motorola mode table uses VT pre-div 4 at 24MHz (4/200 full size,
+     * 4/187 for 4664x2624, ...). Keep each mode's VCO: mult * 24/4 / 9.6. */
+    if (pre == 4 && mult) {
+      u16 vt_new = (mult == 200) ? (u16)cityman_pll_mult : (u16)DIV_ROUND_CLOSEST(mult * 5u, 8u);
       smia65pp_write(s_ctrl, 0x0104, 1, MSM_CAMERA_I2C_BYTE_DATA);
       smia65pp_write(s_ctrl, 0x0136, 0x09, MSM_CAMERA_I2C_BYTE_DATA);
       smia65pp_write(s_ctrl, 0x0137, 0x99, MSM_CAMERA_I2C_BYTE_DATA);
       smia65pp_write(s_ctrl, 0x0304, 1, MSM_CAMERA_I2C_WORD_DATA);
-      smia65pp_write(s_ctrl, 0x0306, (u16)cityman_pll_mult, MSM_CAMERA_I2C_WORD_DATA);
+      smia65pp_write(s_ctrl, 0x0306, vt_new, MSM_CAMERA_I2C_WORD_DATA);
       /* The OP PLL (0x030C/0x030E, MIPI bit clock in dual-PLL mode) is still set
        * for 24MHz too: from 9.6MHz it runs at 40% of 0x0820, so the sensor drops
        * ~60% of each frame's lines (CAMIF 0x712 of 4016). Keep its VCO. */
@@ -1360,8 +1363,8 @@ static void smia65pp_after_qcam_i2c(struct msm_sensor_ctrl_t *s_ctrl) {
         }
       }
       smia65pp_write(s_ctrl, 0x0104, 0, MSM_CAMERA_I2C_BYTE_DATA);
-      pr_err("cityman_smia adapted PLL 4/200 (24MHz) -> 1/%d (9.6MHz -> 1200MHz VCO) EXTCLK 0x0999\n",
-             cityman_pll_mult);
+      pr_err("cityman_smia adapted VT PLL 4/%u (24MHz) -> 1/%u (%u kHz VCO) EXTCLK 0x0999\n",
+             mult, vt_new, 9600u * vt_new);
       rated = 1;
     }
   }
