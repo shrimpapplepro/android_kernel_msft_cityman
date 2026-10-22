@@ -81,6 +81,63 @@ static int32_t msm_actuator_piezo_set_default_focus(
 	return rc;
 }
 
+/*
+ * cityman (Lumia 950 XL) rear module: ROHM BU63165 OIS/AF at 7-bit 0x3e on
+ * CCI1 with 16-bit register addresses. The Windows driver moves the lens by
+ * writing the target to 0x05f0 (high byte) / 0x05f1 (low byte), then 0x02 to
+ * 0x05f2 and 0x01 to 0x05f3. The OnePlus 2 tuning (libactuator_rohm_bu63165gwl)
+ * drives a different BU63165 wiring, so its register table and init settings
+ * are ignored here and only its lens positions are used.
+ */
+#define CITYMAN_AF_SID		0x3e
+#define CITYMAN_AF_POS_MAX	0x07ff
+static int cityman_af_log;
+module_param(cityman_af_log, int, 0644);
+/*
+ * The tuning's codes [initial_code, initial_code + total_steps] are mapped
+ * linearly onto the module's DAC range [cityman_af_inf, cityman_af_mac].
+ * Measured best-focus DACs: far 896, ~0.5 m 992, close-up 1152; nothing
+ * sharpens past ~1300. 840 and 1400 leave the AF search a margin each side.
+ * cityman_af_manual >= 0 pins every write to that DAC (calibration).
+ */
+static int cityman_af_inf = 840, cityman_af_mac = 1400, cityman_af_manual = -1;
+module_param(cityman_af_inf, int, 0644);
+module_param(cityman_af_mac, int, 0644);
+module_param(cityman_af_manual, int, 0644);
+static int cityman_af_code_lo, cityman_af_code_hi;
+
+static void cityman_af_parse_i2c_params(struct msm_actuator_ctrl_t *a_ctrl,
+	int16_t next_lens_position, uint16_t delay)
+{
+	struct msm_camera_i2c_reg_array *t = a_ctrl->i2c_reg_tbl;
+	uint32_t i = a_ctrl->i2c_tbl_index;
+	int32_t pos = next_lens_position;
+
+	if (i + 4 > (a_ctrl->total_steps + 1) * 4) {
+		pr_err("cityman_af: i2c table full\n");
+		return;
+	}
+	if (cityman_af_inf >= 0 && cityman_af_mac >= 0 &&
+		cityman_af_code_hi > cityman_af_code_lo)
+		pos = cityman_af_inf + (pos - cityman_af_code_lo) *
+			(cityman_af_mac - cityman_af_inf) /
+			(cityman_af_code_hi - cityman_af_code_lo);
+	if (cityman_af_manual >= 0)
+		pos = cityman_af_manual;
+	if (pos < 0)
+		pos = 0;
+	if (pos > CITYMAN_AF_POS_MAX)
+		pos = CITYMAN_AF_POS_MAX;
+	if (cityman_af_log)
+		pr_err("cityman_af: pos %d -> 0x%04x delay %u\n",
+			next_lens_position, pos, delay);
+	t[i].reg_addr = 0x05f0; t[i].reg_data = (pos >> 8) & 0xff; t[i].delay = 0;
+	t[i + 1].reg_addr = 0x05f1; t[i + 1].reg_data = pos & 0xff; t[i + 1].delay = 0;
+	t[i + 2].reg_addr = 0x05f2; t[i + 2].reg_data = 0x02; t[i + 2].delay = 0;
+	t[i + 3].reg_addr = 0x05f3; t[i + 3].reg_data = 0x01; t[i + 3].delay = delay;
+	a_ctrl->i2c_tbl_index = i + 4;
+}
+
 static void msm_actuator_parse_i2c_params(struct msm_actuator_ctrl_t *a_ctrl,
 	int16_t next_lens_position, uint32_t hw_params, uint16_t delay)
 {
@@ -96,6 +153,11 @@ static void msm_actuator_parse_i2c_params(struct msm_actuator_ctrl_t *a_ctrl,
 		(!a_ctrl->reg_tbl) ||
 		(!a_ctrl->i2c_reg_tbl)) {
 		pr_err("failed. NULL actuator pointers");
+		return;
+	}
+
+	if (a_ctrl->cityman_bu63165) {
+		cityman_af_parse_i2c_params(a_ctrl, next_lens_position, delay);
 		return;
 	}
 
@@ -1171,7 +1233,7 @@ static int32_t msm_actuator_bivcm_set_position(
 	}
 
 	a_ctrl->i2c_tbl_index = 0;
-	hw_params = set_pos->hw_params;
+	hw_params = 0;
 	for (index = 0; index < set_pos->number_of_steps; index++) {
 		next_lens_position = set_pos->pos[index];
 		delay = set_pos->delay[index];
@@ -1238,6 +1300,31 @@ static int32_t msm_actuator_set_param(struct msm_actuator_ctrl_t *a_ctrl,
 
 	a_ctrl->i2c_data_type = set_info->actuator_params.i2c_data_type;
 	a_ctrl->i2c_client.addr_type = set_info->actuator_params.i2c_addr_type;
+	if (a_ctrl->cityman_bu63165) {
+		pr_err("cityman_af: set_info act_type %d i2c 0x%x addr_t %d data_t %d reg_tbl %d init %d steps %d init_code %d regions %d\n",
+			set_info->actuator_params.act_type,
+			set_info->actuator_params.i2c_addr,
+			set_info->actuator_params.i2c_addr_type,
+			set_info->actuator_params.i2c_data_type,
+			set_info->actuator_params.reg_tbl_size,
+			set_info->actuator_params.init_setting_size,
+			set_info->af_tuning_params.total_steps,
+			set_info->af_tuning_params.initial_code,
+			a_ctrl->region_size);
+		for (i = 0; i < a_ctrl->region_size; i++)
+			pr_err("cityman_af: region %d steps %d..%d code_per_step %d\n", i,
+				a_ctrl->region_params[i].step_bound[1],
+				a_ctrl->region_params[i].step_bound[0],
+				a_ctrl->region_params[i].code_per_step);
+		a_ctrl->func_tbl = &msm_vcm_actuator_table.func_tbl;
+		cityman_af_code_lo = set_info->af_tuning_params.initial_code;
+		cityman_af_code_hi = cityman_af_code_lo +
+			set_info->af_tuning_params.total_steps;
+		if (a_ctrl->act_device_type == MSM_CAMERA_PLATFORM_DEVICE)
+			a_ctrl->i2c_client.cci_client->sid = CITYMAN_AF_SID;
+		a_ctrl->i2c_data_type = MSM_CAMERA_I2C_BYTE_DATA;
+		a_ctrl->i2c_client.addr_type = MSM_CAMERA_I2C_WORD_ADDR;
+	}
 	if (set_info->actuator_params.reg_tbl_size <=
 		MAX_ACTUATOR_REG_TBL_SIZE) {
 		a_ctrl->reg_tbl_size = set_info->actuator_params.reg_tbl_size;
@@ -1255,7 +1342,8 @@ static int32_t msm_actuator_set_param(struct msm_actuator_ctrl_t *a_ctrl,
 	a_ctrl->i2c_reg_tbl = NULL;
 	a_ctrl->i2c_reg_tbl =
 		kzalloc(sizeof(struct msm_camera_i2c_reg_array) *
-		(set_info->af_tuning_params.total_steps + 1), GFP_KERNEL);
+		(set_info->af_tuning_params.total_steps + 1) *
+		(a_ctrl->cityman_bu63165 ? 4 : 1), GFP_KERNEL);
 	if (!a_ctrl->i2c_reg_tbl) {
 		pr_err("kzalloc fail\n");
 		return -ENOMEM;
@@ -1272,7 +1360,8 @@ static int32_t msm_actuator_set_param(struct msm_actuator_ctrl_t *a_ctrl,
 		return -EFAULT;
 	}
 
-	if (set_info->actuator_params.init_setting_size &&
+	if (!a_ctrl->cityman_bu63165 &&
+		set_info->actuator_params.init_setting_size &&
 		set_info->actuator_params.init_setting_size
 		<= MAX_ACTUATOR_INIT_SET) {
 		if (a_ctrl->func_tbl->actuator_init_focus) {
@@ -1823,6 +1912,8 @@ static int32_t msm_actuator_platform_probe(struct platform_device *pdev)
 		pr_err("failed rc %d\n", rc);
 		return rc;
 	}
+	msm_actuator_t->cityman_bu63165 = of_property_read_bool(
+		(&pdev->dev)->of_node, "qcom,cityman-bu63165");
 
 	if (of_find_property((&pdev->dev)->of_node,
 			"qcom,cam-vreg-name", NULL)) {
