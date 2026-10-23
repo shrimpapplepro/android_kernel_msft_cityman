@@ -5106,6 +5106,11 @@ static inline int get_bpd(const char *name)
 #define JEITA_TEMP_HARD_LIMIT_BIT	BIT(5)
 #define CHGPTH_APSD_CFG		0xF5
 #define APSD_EN_BIT			BIT(0)
+#define MISC_WDOG_RST			0x40
+#define WDOG_RST_BIT			BIT(7)
+#define MISC_WD_CFG			0xF1
+#define WDOG_TIMER_EN_BIT		BIT(0)
+#define WDOG_TIMEOUT_RT_BIT		BIT(2)
 static int smbchg_hw_init(struct smbchg_chip *chip)
 {
 	int rc, i;
@@ -5187,6 +5192,28 @@ static int smbchg_hw_init(struct smbchg_chip *chip)
 	if (rc < 0) {
 		dev_err(chip->dev, "Couldn't set AICL threshold rc=%d\n", rc);
 		return rc;
+	}
+
+	/*
+	 * The Lumia firmware can leave the charger watchdog armed (72 s, stop
+	 * charging on expiry). This driver never kicks it, so charging stopped
+	 * about a minute after boot and stayed off until the PMIC lost power.
+	 * Kick it, turn it off, and restart charging if it already expired.
+	 */
+	rc = smbchg_masked_write(chip, chip->misc_base + MISC_WDOG_RST,
+			WDOG_RST_BIT, WDOG_RST_BIT);
+	if (rc < 0)
+		dev_err(chip->dev, "Couldn't kick charger watchdog rc=%d\n", rc);
+	rc = smbchg_sec_masked_write(chip, chip->misc_base + MISC_WD_CFG,
+			WDOG_TIMER_EN_BIT, 0);
+	if (rc < 0)
+		dev_err(chip->dev, "Couldn't disable charger watchdog rc=%d\n", rc);
+	rc = smbchg_read(chip, &reg, chip->misc_base + RT_STS, 1);
+	if (!rc && (reg & WDOG_TIMEOUT_RT_BIT)) {
+		dev_warn(chip->dev, "charger watchdog had expired, restarting charging\n");
+		smbchg_charging_en(chip, false);
+		msleep(20);
+		smbchg_charging_en(chip, true);
 	}
 
 	/*
