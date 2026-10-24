@@ -15,6 +15,8 @@
 #include <linux/ratelimit.h>
 
 #include "msm_isp46.h"
+
+extern int cityman_orient;
 #include "msm_isp_util.h"
 #include "msm_isp_axi_util.h"
 #include "msm_isp_stats_util.h"
@@ -1097,7 +1099,15 @@ static void msm_vfe46_cfg_camif(struct vfe_device *vfe_dev,
 
 	/* cityman: msm_vfe_camif_cfg has no hbi_cnt (msm8992/8994 mm-camera ABI) */
 	{
-		msm_camera_io_w(pix_cfg->input_mux << 5 | pix_cfg->pixel_pattern,
+		/* smia65pp reads the IMX230 out mirrored/flipped (0x0101), which moves
+		 * the colour filter phase; the HAL still reports the unflipped one.
+		 * H mirror: RG<->GR (^1), V flip: RG<->GB (^3), both: RG<->BG (^2). */
+		static const uint32_t orient_xor[4] = { 0, 1, 3, 2 };
+		uint32_t pattern = pix_cfg->pixel_pattern;
+
+		if (pattern <= ISP_BAYER_GBGBGB)
+			pattern ^= orient_xor[cityman_orient & 3];
+		msm_camera_io_w(pix_cfg->input_mux << 5 | pattern,
 		vfe_dev->vfe_base + 0x50);
 	}
 

@@ -830,6 +830,14 @@ MODULE_PARM_DESC(op_pll_fix, "Also re-derive the OP (MIPI) PLL for 9.6MHz MCLK (
 
 static int cityman_colorbars = 0;
 module_param_named(colorbars, cityman_colorbars, int, 0644);
+/*
+ * IMAGE_ORIENTATION (0x0101: bit0 H mirror, bit1 V flip). The cityman IMX230 is
+ * mounted 180 deg from the Motorola module whose tuning we use, so read it out
+ * rotated (3) and report the usual rear mount angle of 90. Without this a
+ * Camera2 viewfinder is upside down whatever mount angle is reported.
+ */
+int cityman_orient = 3;  /* also read by msm_isp46 to remap the Bayer pattern */
+module_param_named(orient, cityman_orient, int, 0644);
 MODULE_PARM_DESC(colorbars, "Enable sensor test pattern color bars (default 0=off, 1=on)");
 
 /* 0 = let AEC drive 0x0202/0x0204. A non-zero value is re-written after every
@@ -1332,6 +1340,13 @@ static void smia65pp_after_qcam_i2c(struct msm_sensor_ctrl_t *s_ctrl) {
   int late, streamed = 0;
 
   smia65pp_read(s_ctrl, 0x0100, &mode, MSM_CAMERA_I2C_BYTE_DATA);
+
+  /* The HAL starts streaming from an I2C table, never CFG_SET_START_STREAM,
+   * so set the readout orientation after every table while still in standby. */
+  if (!(mode & 1)) {
+    smia65pp_write(s_ctrl, 0x0101, (u16)(cityman_orient & 3),
+                   MSM_CAMERA_I2C_BYTE_DATA);
+  }
 
   /* Detect Motorola 24MHz MCLK PLL (pre=4, mult=200 -> 1200MHz VCO)
    * and adapt to Lumia 9.6MHz MCLK (pre=1, mult=cityman_pll_mult -> 1200MHz VCO).
