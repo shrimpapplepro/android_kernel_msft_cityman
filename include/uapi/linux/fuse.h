@@ -573,6 +573,8 @@ struct fuse_init_out {
 	uint16_t	max_background;
 	uint16_t	congestion_threshold;
 	uint32_t	max_write;
+	uint32_t	time_gran;
+	uint32_t	unused[9];
 };
 
 #define CUSE_INIT_INFO_MAX 4096
